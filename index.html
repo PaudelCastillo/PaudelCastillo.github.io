@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DS18B20 · Monitor de Temperatura</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Oxanium:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* ═══ CONFIG: edita el teu repo aquí ═══════════════════════════
+       Ha de coincidir amb CSV_PATH del script Python.
+       Es llegeix com a variable JS a sota (window.DS18B20_CONFIG).
+    ════════════════════════════════════════════════════════════════ */
+
+    :root {
+      --bg:      #06090f;
+      --panel:   #0c1118;
+      --border:  #17253a;
+      --accent:  #00ffe0;
+      --accent2: #ff4d6d;
+      --accent3: #ffe045;
+      --green:   #39ff80;
+      --text:    #b8cfe0;
+      --dim:     #3a526a;
+      --mono:    'Share Tech Mono', monospace;
+      --head:    'Oxanium', sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--mono);
+      min-height: 100vh;
+    }
+
+    /* ── Noise overlay ── */
+    body::after {
+      content: '';
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+      background-size: 256px;
+      opacity: 0.5;
+    }
+
+    /* ── Scan-line ── */
+    body::before {
+      content: '';
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,255,224,0.012) 2px,
+        rgba(0,255,224,0.012) 4px
+      );
+    }
+
+    /* ── HEADER ── */
+    header {
+      position: relative; z-index: 10;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 20px;
+      padding: 16px 32px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(6,9,15,0.92);
+      backdrop-filter: blur(12px);
+    }
+
+    .brand {
+      display: flex; align-items: center; gap: 14px;
+    }
+
+    .brand-glyph {
+      font-family: var(--head);
+      font-size: 1.6rem; font-weight: 800;
+      color: var(--accent);
+      letter-spacing: -0.02em;
+      text-shadow: 0 0 30px rgba(0,255,224,0.5);
+      line-height: 1;
+    }
+
+    .brand-sub {
+      font-size: 0.6rem; letter-spacing: 0.35em;
+      color: var(--dim); text-transform: uppercase;
+      display: block; margin-top: 2px;
+    }
+
+    .ticker {
+      display: flex; justify-content: center;
+      gap: 32px; font-size: 0.7rem; color: var(--dim);
+    }
+
+    .ticker-item { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .ticker-val  { color: var(--text); font-size: 0.85rem; }
+    .ticker-val.live { color: var(--accent); text-shadow: 0 0 12px rgba(0,255,224,0.5); }
+
+    .hdr-right { display: flex; align-items: center; gap: 16px; }
+
+    .live-pill {
+      display: flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border: 1px solid var(--border); border-radius: 20px;
+      font-size: 0.65rem; letter-spacing: 0.2em;
+      color: var(--dim);
+    }
+
+    .live-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+      animation: blink 1.4s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.2; }
+    }
+
+    .live-dot.err { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); animation: none; }
+
+    .btn {
+      font-family: var(--mono); font-size: 0.7rem;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      padding: 6px 16px; border-radius: 3px; cursor: pointer;
+      text-decoration: none; transition: all 0.2s;
+      border: 1px solid var(--border); color: var(--dim);
+      background: transparent;
+    }
+    .btn:hover { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 16px rgba(0,255,224,0.2); }
+    .btn.primary { border-color: var(--accent); color: var(--accent); }
+
+    /* ── MAIN ── */
+    main {
+      position: relative; z-index: 1;
+      max-width: 1440px; margin: 0 auto;
+      padding: 28px 32px;
+      display: flex; flex-direction: column; gap: 20px;
+    }
+
+    /* ── Stat Row ── */
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+    }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 18px 20px;
+      position: relative; overflow: hidden;
+      transition: border-color 0.25s, transform 0.2s;
+      cursor: default;
+    }
+
+    .stat:hover { border-color: rgba(0,255,224,0.25); transform: translateY(-2px); }
+
+    .stat::after {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0;
+      height: 1px;
+    }
+
+    .s0::after { background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+    .s1::after { background: linear-gradient(90deg, transparent, var(--accent2), transparent); }
+    .s2::after { background: linear-gradient(90deg, transparent, var(--accent3), transparent); }
+    .s3::after { background: linear-gradient(90deg, transparent, var(--green), transparent); }
+    .s4::after { background: linear-gradient(90deg, transparent, #a78bfa, transparent); }
+
+    .stat-lbl {
+      font-size: 0.58rem; letter-spacing: 0.3em;
+      text-transform: uppercase; color: var(--dim);
+      margin-bottom: 10px;
+    }
+
+    .stat-num {
+      font-family: var(--head); font-size: 2.4rem;
+      font-weight: 800; line-height: 1; color: #fff;
+    }
+
+    .stat-num sup { font-size: 0.9rem; color: var(--dim); font-weight: 300; font-family: var(--mono); }
+
+    /* ── Chart + side panel ── */
+    .content-grid {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 4px; overflow: hidden;
+    }
+
+    .panel-hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(0,0,0,0.3);
+    }
+
+    .panel-title {
+      font-size: 0.65rem; letter-spacing: 0.25em;
+      text-transform: uppercase; color: var(--accent);
+    }
+
+    .panel-tag {
+      font-size: 0.6rem;
+      padding: 2px 8px; border-radius: 2px;
+      border: 1px solid var(--border); color: var(--dim);
+    }
+
+    /* Chart */
+    .chart-body { padding: 18px; height: 280px; }
+
+    /* Side info */
+    .info-list { }
+
+    .info-item {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 13px 18px;
+      border-bottom: 1px solid rgba(23,37,58,0.6);
+      font-size: 0.72rem;
+    }
+
+    .info-item:last-child { border-bottom: none; }
+    .info-k { color: var(--dim); font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; }
+    .info-v { color: var(--text); }
+    .info-v.hi { color: var(--accent); }
+
+    /* ── Taula ── */
+    .taula-scroll { max-height: 360px; overflow-y: auto; overflow-x: auto; }
+
+    table { width: 100%; border-collapse: collapse; }
+
+    thead { position: sticky; top: 0; z-index: 2; }
+
+    th {
+      background: #050810;
+      padding: 10px 16px; text-align: left;
+      font-size: 0.6rem; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--dim); border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+    }
+
+    td {
+      padding: 10px 16px; font-size: 0.74rem;
+      border-bottom: 1px solid rgba(23,37,58,0.4);
+      color: var(--text);
+    }
+
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(0,255,224,0.03); }
+
+    /* Temperature badge */
+    .tbadge {
+      display: inline-flex; align-items: center;
+      padding: 2px 10px; border-radius: 2px;
+      font-weight: 600; font-size: 0.75rem;
+    }
+
+    .tbadge.ice    { background: rgba(0,255,224,0.08);  color: var(--accent); }
+    .tbadge.cool   { background: rgba(57,255,128,0.08); color: var(--green); }
+    .tbadge.warm   { background: rgba(255,224,69,0.08); color: var(--accent3); }
+    .tbadge.hot    { background: rgba(255,77,109,0.08); color: var(--accent2); }
+
+    .sensor-badge {
+      display: inline-block;
+      padding: 1px 7px; border-radius: 2px;
+      background: rgba(167,139,250,0.1);
+      border: 1px solid rgba(167,139,250,0.2);
+      color: #a78bfa; font-size: 0.65rem;
+    }
+
+    /* ── Loader / Error ── */
+    .center-msg {
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      padding: 50px; gap: 14px; color: var(--dim);
+    }
+
+    .spinner {
+      width: 36px; height: 36px;
+      border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.75s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .msg-txt { font-size: 0.7rem; letter-spacing: 0.2em; }
+
+    .err-box {
+      margin: 16px; padding: 16px 20px;
+      border: 1px solid rgba(255,77,109,0.4); border-radius: 3px;
+      background: rgba(255,77,109,0.06);
+      color: var(--accent2); font-size: 0.78rem; line-height: 1.7;
+    }
+
+    /* ── Responsive ── */
+    @media (max-width: 1100px) {
+      .content-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 800px) {
+      .stat-row { grid-template-columns: repeat(2, 1fr); }
+      header    { grid-template-columns: 1fr auto; }
+      .ticker   { display: none; }
+      main      { padding: 16px; }
+    }
+    @media (max-width: 480px) {
+      .stat-row  { grid-template-columns: 1fr 1fr; }
+      .stat-num  { font-size: 1.8rem; }
+      header     { padding: 12px 16px; }
+      .hdr-right .btn { display: none; }
+    }
+
+    /* ── Fade-in ── */
+    .fade { animation: fi 0.35s ease both; }
+    @keyframes fi { from { opacity:0; transform: translateY(6px); } to { opacity:1; transform: none; } }
+  </style>
+</head>
+<body>
+
+<!-- ══ CONFIGURACIÓ ══════════════════════════════════════════════
+  Edita les variables de sota amb les teves dades de GitHub.
+  RAW_CSV_URL: URL raw del teu fitxer CSV al repositori GitHub.
+  Exemple:
+    https://raw.githubusercontent.com/usuari/repo/main/data/temperatures.csv
+═══════════════════════════════════════════════════════════════ -->
+<script>
+  window.DS18B20_CONFIG = {
+    RAW_CSV_URL: "https://raw.githubusercontent.com/EL-TEU-USUARI/EL-TEU-REPO/main/data/temperatures.csv",
+    MAX_CHART_POINTS: 200,
+    REFRESH_MS: 60000,   // refresca cada 60 s
+  };
+</script>
+
+<!-- ══ HEADER ══════════════════════════════════════════════════ -->
+<header>
+  <div class="brand">
+    <div>
+      <div class="brand-glyph">DS18B20</div>
+      <span class="brand-sub">Monitor de temperatura · Raspberry Pi</span>
+    </div>
+  </div>
+
+  <div class="ticker" id="ticker">
+    <div class="ticker-item"><span class="ticker-lbl">ACTUAL</span><span class="ticker-val live" id="tkActual">—</span></div>
+    <div class="ticker-item"><span class="ticker-lbl">MÀX</span><span class="ticker-val" id="tkMax">—</span></div>
+    <div class="ticker-item"><span class="ticker-lbl">MÍN</span><span class="ticker-val" id="tkMin">—</span></div>
+    <div class="ticker-item"><span class="ticker-lbl">LECTURES</span><span class="ticker-val" id="tkCount">—</span></div>
+  </div>
+
+  <div class="hdr-right">
+    <div class="live-pill">
+      <div class="live-dot" id="liveDot"></div>
+      <span id="liveText">CONNECTANT</span>
+    </div>
+    <a class="btn primary" id="btnCsv" href="#" download="temperatures.csv">↓ CSV</a>
+    <button class="btn" id="btnRefresh" onclick="carregarDades()">↺ REFRESCA</button>
+  </div>
+</header>
+
+<!-- ══ MAIN ════════════════════════════════════════════════════ -->
+<main>
+
+  <!-- Stats -->
+  <div class="stat-row">
+    <div class="stat s0">
+      <div class="stat-lbl">Temperatura actual</div>
+      <div class="stat-num" id="sActual">—<sup>°C</sup></div>
+    </div>
+    <div class="stat s1">
+      <div class="stat-lbl">Màxima registrada</div>
+      <div class="stat-num" id="sMax">—<sup>°C</sup></div>
+    </div>
+    <div class="stat s2">
+      <div class="stat-lbl">Mínima registrada</div>
+      <div class="stat-num" id="sMin">—<sup>°C</sup></div>
+    </div>
+    <div class="stat s3">
+      <div class="stat-lbl">Mitjana</div>
+      <div class="stat-num" id="sAvg">—<sup>°C</sup></div>
+    </div>
+    <div class="stat s4">
+      <div class="stat-lbl">Total lectures</div>
+      <div class="stat-num" id="sCount">—<sup></sup></div>
+    </div>
+  </div>
+
+  <!-- Gràfic + Info -->
+  <div class="content-grid">
+    <div class="panel">
+      <div class="panel-hdr">
+        <span class="panel-title">Evolució de temperatura</span>
+        <span class="panel-tag" id="chartTag">—</span>
+      </div>
+      <div class="chart-body">
+        <canvas id="chart"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-hdr">
+        <span class="panel-title">Estat del sistema</span>
+      </div>
+      <div class="info-list" id="infoList">
+        <div class="center-msg"><div class="spinner"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Taula -->
+  <div class="panel">
+    <div class="panel-hdr">
+      <span class="panel-title">Registres recents</span>
+      <span class="panel-tag" id="taulaTag">—</span>
+    </div>
+    <div class="taula-scroll">
+      <div id="taulaContent">
+        <div class="center-msg">
+          <div class="spinner"></div>
+          <span class="msg-txt">CARREGANT DADES…</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ══ LÒGICA ══════════════════════════════════════════════════ -->
+<script>
+"use strict";
+const CFG = window.DS18B20_CONFIG;
+const $   = id => document.getElementById(id);
+
+// ── Parseja CSV text ──────────────────────────────────────────
+function parseCsv(text) {
+  const lines = text.trim().split("\n").filter(Boolean);
+  if (lines.length < 2) return { headers: [], rows: [] };
+  const headers = lines[0].split(",").map(h => h.trim());
+  const rows    = lines.slice(1).map(l =>
+    l.split(",").map(v => v.trim())
+  );
+  return { headers, rows };
+}
+
+// ── Col·index segur ───────────────────────────────────────────
+function ci(headers, name) {
+  const i = headers.indexOf(name);
+  return i >= 0 ? i : null;
+}
+
+// ── Classe temperatura ────────────────────────────────────────
+function tc(t) {
+  if (t < 10) return 'ice';
+  if (t < 22) return 'cool';
+  if (t < 34) return 'warm';
+  return 'hot';
+}
+
+// ── Chart ─────────────────────────────────────────────────────
+let chartInst = null;
+
+function renderChart(labels, dades) {
+  const ctx   = $('chart').getContext('2d');
+  const grad  = ctx.createLinearGradient(0, 0, 0, 260);
+  grad.addColorStop(0, 'rgba(0,255,224,0.28)');
+  grad.addColorStop(1, 'rgba(0,255,224,0)');
+
+  if (chartInst) chartInst.destroy();
+
+  chartInst = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: '°C',
+        data: dades,
+        borderColor: '#00ffe0',
+        borderWidth: 1.8,
+        fill: true,
+        backgroundColor: grad,
+        pointRadius: dades.length > 80 ? 0 : 2.5,
+        pointHoverRadius: 5,
+        pointBackgroundColor: '#00ffe0',
+        tension: 0.38,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0c1118',
+          borderColor: '#17253a', borderWidth: 1,
+          titleColor: '#3a526a', bodyColor: '#00ffe0',
+          titleFont: { family: "'Share Tech Mono'", size: 11 },
+          bodyFont:  { family: "'Share Tech Mono'", size: 12 },
+          callbacks: { label: c => ` ${c.parsed.y.toFixed(3)} °C` }
+        }
+      },
+      scales: {
+        x: {
+          ticks: { color: '#3a526a', font: { family: "'Share Tech Mono'", size: 9 }, maxTicksLimit: 8, maxRotation: 0 },
+          grid:  { color: 'rgba(23,37,58,0.8)' },
+        },
+        y: {
+          ticks: { color: '#3a526a', font: { family: "'Share Tech Mono'", size: 9 }, callback: v => v.toFixed(1) + '°' },
+          grid:  { color: 'rgba(23,37,58,0.8)' },
+        }
+      }
+    }
+  });
+}
+
+// ── Renderitza tot ────────────────────────────────────────────
+function render({ headers, rows }) {
+  const iTs = ci(headers, 'timestamp');
+  const iId = ci(headers, 'sensor_id');
+  const iC  = ci(headers, 'temperatura_c');
+  const iF  = ci(headers, 'temperatura_f');
+
+  const dades = rows.map(r => ({
+    ts:   iTs != null ? r[iTs] : '—',
+    id:   iId != null ? r[iId] : '—',
+    c:    iC  != null ? parseFloat(r[iC]) : NaN,
+    f:    iF  != null ? parseFloat(r[iF]) : NaN,
+  })).filter(d => !isNaN(d.c));
+
+  if (!dades.length) {
+    mostrarError("El CSV no conté dades vàlides de temperatura.");
+    return;
+  }
+
+  const temps   = dades.map(d => d.c);
+  const ultima  = dades.at(-1);
+  const min     = Math.min(...temps);
+  const max     = Math.max(...temps);
+  const avg     = temps.reduce((a, b) => a + b, 0) / temps.length;
+  const sensors = [...new Set(dades.map(d => d.id))];
+
+  // Stats
+  $('sActual').innerHTML = `${ultima.c.toFixed(1)}<sup>°C</sup>`;
+  $('sMax').innerHTML    = `${max.toFixed(1)}<sup>°C</sup>`;
+  $('sMin').innerHTML    = `${min.toFixed(1)}<sup>°C</sup>`;
+  $('sAvg').innerHTML    = `${avg.toFixed(1)}<sup>°C</sup>`;
+  $('sCount').innerHTML  = `${rows.length}<sup></sup>`;
+
+  // Ticker
+  $('tkActual').textContent = `${ultima.c.toFixed(2)}°C`;
+  $('tkMax').textContent    = `${max.toFixed(2)}°C`;
+  $('tkMin').textContent    = `${min.toFixed(2)}°C`;
+  $('tkCount').textContent  = rows.length;
+
+  // Info panel
+  const tsActual = ultima.ts;
+  $('infoList').innerHTML = [
+    ['Sensors actius',     sensors.map(s => `<span class="sensor-badge">${s}</span>`).join(' ')],
+    ['Última lectura',     `<span class="info-v hi">${tsActual}</span>`],
+    ['Última temp. (°F)',  `${ultima.f.toFixed(3)} °F`],
+    ['Amplitud tèrmica',   `${(max - min).toFixed(2)} °C`],
+    ['Registres al CSV',   rows.length],
+    ['Mostrant al gràfic', Math.min(dades.length, CFG.MAX_CHART_POINTS)],
+  ].map(([k, v]) => `
+    <div class="info-item fade">
+      <span class="info-k">${k}</span>
+      <span class="info-v">${v}</span>
+    </div>`).join('');
+
+  // Chart — últims MAX_CHART_POINTS del primer sensor
+  const primerSensor = sensors[0];
+  const dadesGrafic  = dades
+    .filter(d => d.id === primerSensor)
+    .slice(-CFG.MAX_CHART_POINTS);
+
+  const labels = dadesGrafic.map(d => {
+    const parts = d.ts.split(' ');
+    return parts[1] ? parts[1].substring(0, 5) : d.ts;
+  });
+
+  renderChart(labels, dadesGrafic.map(d => d.c));
+  $('chartTag').textContent = `${dadesGrafic.length} punts · ${primerSensor}`;
+
+  // Taula — últimes 50 files, de més nova a més vella
+  const files = [...dades].reverse().slice(0, 50);
+  $('taulaTag').textContent = `${files.length} files`;
+
+  $('taulaContent').innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Sensor ID</th>
+          <th>Temperatura °C</th>
+          <th>Temperatura °F</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${files.map(d => {
+          const [date, time] = d.ts.split(' ');
+          return `
+          <tr class="fade">
+            <td>
+              <span style="color:var(--dim);font-size:0.65rem">${date || ''} </span>
+              ${time || d.ts}
+            </td>
+            <td><span class="sensor-badge">${d.id}</span></td>
+            <td><span class="tbadge ${tc(d.c)}">${d.c.toFixed(3)} °C</span></td>
+            <td style="color:var(--dim)">${d.f.toFixed(3)} °F</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>`;
+
+  // Activa link de descàrrega del CSV
+  $('btnCsv').href = CFG.RAW_CSV_URL;
+}
+
+// ── Error ─────────────────────────────────────────────────────
+function mostrarError(msg) {
+  const html = `<div class="err-box">⚠ ${msg}</div>`;
+  $('taulaContent').innerHTML = html;
+  $('infoList').innerHTML     = html;
+  $('liveDot').classList.add('err');
+  $('liveText').textContent = 'ERROR';
+}
+
+// ── Carrega i refresca ────────────────────────────────────────
+async function carregarDades() {
+  $('liveText').textContent = 'CARREGANT…';
+
+  // Forcem no-cache afegint un timestamp a la URL
+  const url = `${CFG.RAW_CSV_URL}?t=${Date.now()}`;
+
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(
+      `No s'ha pogut descarregar el CSV (HTTP ${res.status}).\n` +
+      `Comprova que RAW_CSV_URL és correcte i que el fitxer existeix al repo.`
+    );
+    const text = await res.text();
+    const data = parseCsv(text);
+
+    if (!data.rows.length) {
+      mostrarError("CSV buit o sense dades. Comprova que el sensor està enviant dades.");
+      return;
+    }
+
+    $('liveDot').classList.remove('err');
+    $('liveText').textContent = 'EN LÍNIA';
+
+    render(data);
+
+  } catch (e) {
+    mostrarError(e.message);
+  }
+}
+
+// ── Arrenca ───────────────────────────────────────────────────
+carregarDades();
+setInterval(carregarDades, CFG.REFRESH_MS);
+</script>
+
+</body>
+</html>
